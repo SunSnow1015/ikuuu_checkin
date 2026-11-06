@@ -40,6 +40,27 @@ class DomainTests(unittest.TestCase):
             else:
                 os.environ["IKUUU_DOMAIN"] = previous
 
+    def test_disabled_self_update_never_opens_script(self):
+        module = load_module()
+        with patch.dict(os.environ, {'IKUUU_DISABLE_SELF_UPDATE': '1'}):
+            with patch('builtins.open', side_effect=AssertionError('No script access')) as opened:
+                self.assertFalse(module.update_self_host('new.example'))
+        opened.assert_not_called()
+
+    def test_domain_discovery_respects_disabled_self_update(self):
+        module = load_module()
+        module.ikun_host = 'old.example'
+        module.custom_ikun_host = ''
+        module.backup_hosts = []
+        with patch.dict(os.environ, {'IKUUU_DISABLE_SELF_UPDATE': '1'}):
+            with patch.object(module, 'test_host_reachable', side_effect=[False, True]):
+                with patch.object(module, 'get_available_domains_from_old_domain', return_value=['new.example']):
+                    with patch('builtins.open', side_effect=AssertionError('No script access')) as opened:
+                        with patch('builtins.print'):
+                            self.assertEqual(module.find_working_domain(), 'new.example')
+        self.assertEqual(module.ikun_host, 'new.example')
+        opened.assert_not_called()
+
     def test_login_page_uses_html_headers_and_new_phase(self):
         module = load_module()
 

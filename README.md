@@ -4,7 +4,8 @@
 > 每天进行签到，获取额外的流量奖励<br/>
 > 2026年4月ikuuu新增登录请求验证Geetest v4，不使用过验证方式已无法正常签到<br/>
 > 支持登录邮箱验证码：账号配置提供邮箱密码或授权码时，通过 IMAP 自动读取 8 位验证码<br/>
-> 添加cookie缓存登陆，帐密登录后自动记录cookie，有效期内进行签到不消耗token，单账号理论7天最低0.0016$(0.011￥)，单次充值6美元单账号可用27000+天
+> 默认使用本地识别，无需 CapSolver / AntiCaptcha API Key；Cookie 有效时复用登录状态。
+> 支持图标点选和文字点选分流；无法可靠识别、遇到未知题型或协议变化时明确失败，不随机点击、不回退付费服务。
 
 ---
 
@@ -42,12 +43,13 @@ Settings → Secrets and variables → Actions
 | SMTP_USERNAME | 可选 | SMTP 登录用户名，默认与发件邮箱相同 |
 | SMTP_PORT | 可选 | SMTP 端口 |
 | SMTP_SECURITY | 可选 | ssl/starttls/plain |
-| IKUUU_CAPTCHA_SOLVER_ENABLED | 可选 | 是否启用验证码(0/1) |
-| IKUUU_CAPTCHA_PROVIDER | 可选 | 验证码服务商(capsolver/anticaptcha) |
-| IKUUU_CAPSOLVER_API_KEY | 可选 | CapSolver Api Key |
-| IKUUU_ANTICAPTCHA_API_KEY | 可选 | AntiCaptcha Api Key |
-| IKUUU_CAPTCHA_TIMEOUT_SECONDS | 可选 | 验证码超时时间(秒) |
-| IKUUU_CAPTCHA_POLL_INTERVAL_SECONDS | 可选 | 轮询间隔(秒) |
+| IKUUU_CAPTCHA_SOLVER_ENABLED | 可选 | 是否启用验证码(0/1)，默认 1 |
+| IKUUU_CAPTCHA_PROVIDER | 可选 | 默认 `local`；显式选择 `capsolver` / `anticaptcha` 才使用外部识别服务 |
+| IKUUU_CAPSOLVER_API_KEY | 仅外部服务 | 本地模式不读取、不需要此 Key |
+| IKUUU_ANTICAPTCHA_API_KEY | 仅外部服务 | 本地模式不读取、不需要此 Key |
+| IKUUU_CAPTCHA_TIMEOUT_SECONDS | 可选 | 总超时，默认 120 秒，本地模式范围 1–600，超时终止识别子进程 |
+| IKUUU_CAPTCHA_MAX_ATTEMPTS | 可选 | 本地最多获取几次新题，默认 3，范围 1–5 |
+| IKUUU_CAPTCHA_POLL_INTERVAL_SECONDS | 仅外部服务 | 轮询间隔(秒) |
 | IKUUU_IMAP_PROVIDER | 可选 | 邮箱类型，默认 auto 自动识别 |
 | IKUUU_IMAP_HOST | 自定义时 | IMAP 服务器 |
 | IKUUU_IMAP_PORT | 可选 | IMAP 端口，默认 993 |
@@ -56,12 +58,17 @@ Settings → Secrets and variables → Actions
 | IKUUU_EMAIL_CODE_TIMEOUT_SECONDS | 可选 | 等待邮箱验证码超时，默认 120 秒 |
 | IKUUU_EMAIL_CODE_POLL_INTERVAL_SECONDS | 可选 | 邮箱轮询间隔，默认 2 秒 |
 
-推荐使用 CapSolver 过验证，使用此链接注册后充值可额外获得 6% 充值额度：  
-https://dashboard.capsolver.com/passport/register?inviteCode=xtoNMmGLED4g  
+### 本地识别的范围
 
-平台最低充值 6 美元。  
+- 图标：按提示图进行彩色目标分离、旋转与仿射图形匹配和一对一分配，不依赖固定类别的图标分类模型。低匹配分或结果有歧义时拒绝提交。
+- 文字：使用 ddddocr 自带的检测、两套 OCR ONNX 模型，在多个角度核对识别结果；提示字识别不一致、缺字或重复匹配时拒绝提交。真实 iKuuu 文字题尚未验证，不能承诺通过率。
+- 运行时按极验实际返回的 `captcha_type` 分流，不强制切成图标题。当前仅支持 `icon` / `word`，其他题型明确报错。
+- 参考 [GeekedTest](https://github.com/SunSnow1015/GeekedTest) 的协议实现，并保留其 MIT 许可；参考 [Geetest4_yolov8](https://github.com/SunSnow1015/Geetest4_yolov8) 的检测与匹配思路，但不引入其大体积 Torch/Paddle 环境或授权不明确的权重。
+- 本地模式即使残留外部 API Key 或 fallback 配置也不会回退付费识别。仍需联网访问 iKuuu、极验官方加载/图片/验证接口，这不是离线签到。
+- 模型随 Python 依赖在安装时下载，运行时不下载模型，也不需要 GPU、浏览器或自建识别 HTTP 服务。首次安装需要额外磁盘空间；建议使用 Linux x86_64 的 Actions 或容器。
+- 协议更新仍可能导致失败；静态提取客户端参数不等于保证所有后续版本可用，不执行下载的 JavaScript。
 
-签到价格约为 0.0016 美元(0.011￥)/次（单账号），重复签到仍会计费。  
+当前验收仅限本地：3 组已保存的真实图标题均完成正确顺序匹配，合成中文场景完成检测与双模型识别；这些样本不代表总体通过率。尚未向真实极验提交结果或完成登录签到，真实文字题、GitHub Actions 执行、Docker 运行及 OpenWrt 运行均未实测。
 
 ---
 **ACCOUNTS 写法：**  
@@ -83,19 +90,42 @@ QQ、163、126 等邮箱通常应填写邮箱后台生成的授权码，不要�
 
 ---
 ## 3. 自动运行
-### 方式一：GitHub Actions
-创建 workflow 后运行一次，之后每天自动执行
-### 方式二：云服务器（推荐）
-更推荐使用云服务器，更稳定，时间更精准，不会被github检测为薅羊毛。<br/> 
-**优点：**
+### 方式一：GitHub Actions（优先）
 
-- 更稳定  
-- 时间更精准  
-- 不易被风控  
+仓库包含 `.github/workflows/checkin.yml`，每天北京时间 08:17（UTC 00:17）调度，也支持手动运行；GitHub 定时任务可能延迟。
+
+1. 在仓库的 Actions Secrets 中添加 `ACCOUNTS`，可选添加 `MAIL_USER`、`MAIL_PASS`、`MAIL_TO`。
+2. 如需指定域名，在 Actions Variables 中添加 `IKUUU_DOMAIN`；可选设置 `IKUUU_CAPTCHA_TIMEOUT_SECONDS` 和 `IKUUU_CAPTCHA_MAX_ATTEMPTS`。
+3. 在 Actions 中启用并手动运行 **Local iKuuu check-in**。自定义 SMTP / IMAP 等配置可作为环境变量加入签到步骤，密码只能使用 Secrets。
+
+此 workflow 固定为本地识别、只读仓库权限；安装依赖和离线测试步骤不接收账号 Secrets。仅缓存 pip 依赖，不缓存或上传 Cookie，因此每个新 runner 通常需要重新登录。任何账号签到失败会返回非零退出码。首次上线应查看实际日志验证，离线测试通过不代表极验服务端一定接受结果。
+
+### 方式二：Python / 青龙 / Docker
+
+Python 3.10–3.12 环境下载完整仓库后执行：
+
+```sh
+python -m pip install -r requirements-local.txt
+python -m unittest discover -s tests -v
+python auto_check_in_ikuuu.py
+```
+
+账号和邮箱参数通过环境变量配置。本地模式不能只订阅单个签到脚本：青龙需要保留同目录的 `local_captcha.py`、`captcha_images.py` 和 `geetest_protocol.py`，并使用实际执行脚本的 Python 安装依赖。邮箱的 SSL / STARTTLS 连接会校验证书及主机名；自建邮箱需使用受信任证书，不应通过切换明文连接绕过证书错误。
+
+Docker 构建及单次执行：
+
+```sh
+docker build -t ikuuu-checkin:local .
+docker run --rm --env-file .env -v ikuuu-data:/app/data ikuuu-checkin:local
+```
+
+`.env` 中配置 `ACCOUNTS` 等参数，不提交该文件。容器以非 root 用户执行；使用命名卷保存 Cookie，敏感卷不要上传或共享。容器本身不常驻定时，需要宿主机调度器每日执行一次。
 
 ---
 
 ### 方式三：OpenWrt / iStoreOS 软件包
+
+原生 OpenWrt 的 musl、MIPS / ARM32 环境通常不能直接安装 ONNX Runtime 官方 wheel，本次不承诺原生路由器支持本地识别，也不自动安装大型模型。现有 LuCI 服务商配置保持不变；具备容器条件的设备优先使用上面的 Docker 方案，或把任务放在 Actions。旧版发布包不包含此次本地后端。
 
 从 [Releases](https://github.com/Ceylan233/ikuuu_checkin/releases) 下载 IPK 后安装：
 
@@ -121,10 +151,9 @@ export MAIL_PASS=""
 export MAIL_TO=""
 
 export IKUUU_CAPTCHA_SOLVER_ENABLED="1"
-export IKUUU_CAPTCHA_PROVIDER="capsolver"
-export IKUUU_CAPSOLVER_API_KEY=""
+export IKUUU_CAPTCHA_PROVIDER="local"
 export IKUUU_CAPTCHA_TIMEOUT_SECONDS="120"
-export IKUUU_CAPTCHA_POLL_INTERVAL_SECONDS="3"
+export IKUUU_CAPTCHA_MAX_ATTEMPTS="3"
 
 /usr/bin/python3 /root/ikuuu_checkin/auto_check_in_ikuuu.py
 ```

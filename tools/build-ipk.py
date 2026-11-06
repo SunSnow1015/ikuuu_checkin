@@ -45,9 +45,10 @@ def tree_entries(root):
 
 
 def main():
-    packaged = FILES / "usr" / "libexec" / "ikuuu-checkin" / "auto_check_in_ikuuu.py"
-    packaged.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / "auto_check_in_ikuuu.py", packaged)
+    packaged = FILES / "usr" / "libexec" / "ikuuu-checkin"
+    packaged.mkdir(parents=True, exist_ok=True)
+    for name in ("auto_check_in_ikuuu.py", "local_captcha.py", "captcha_images.py", "geetest_protocol.py", "GeekedTest.LICENSE", "requirements.txt", "requirements-local.txt"):
+        shutil.copy2(ROOT / name, packaged / name)
     control_archive = tar_bytes([(CONTROL / name, name) for name in ("control", "conffiles", "postinst", "prerm")])
     data_archive = tar_bytes(tree_entries(FILES))
     DIST.mkdir(parents=True, exist_ok=True)

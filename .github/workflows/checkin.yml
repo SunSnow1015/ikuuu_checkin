@@ -1,0 +1,48 @@
+name: Local iKuuu check-in
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 0 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ikuuu-local-checkin
+  cancel-in-progress: false
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-local.txt
+      - name: Install local recognition dependencies
+        run: python -m pip install -r requirements-local.txt
+      - name: Run offline regression tests
+        run: python -m unittest discover -s tests -v
+      - name: Check in with local recognition
+        env:
+          PYTHONUNBUFFERED: '1'
+          ACCOUNTS: ${{ secrets.ACCOUNTS }}
+          IKUUU_DOMAIN: ${{ vars.IKUUU_DOMAIN }}
+          IKUUU_CAPTCHA_SOLVER_ENABLED: '1'
+          IKUUU_CAPTCHA_PROVIDER: local
+          IKUUU_CAPTCHA_TIMEOUT_SECONDS: ${{ vars.IKUUU_CAPTCHA_TIMEOUT_SECONDS || '120' }}
+          IKUUU_CAPTCHA_MAX_ATTEMPTS: ${{ vars.IKUUU_CAPTCHA_MAX_ATTEMPTS || '3' }}
+          IKUUU_DISABLE_SELF_UPDATE: '1'
+          IKUUU_DATA_DIR: ${{ runner.temp }}/ikuuu-data
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASS: ${{ secrets.MAIL_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python auto_check_in_ikuuu.py

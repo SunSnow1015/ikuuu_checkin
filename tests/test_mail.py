@@ -39,6 +39,75 @@ class MailTests(unittest.TestCase):
                     ],
                 )
 
+    def test_imap_tls_authenticates_server(self):
+        monitor = load_monitor()
+        for security in ('ssl', 'starttls'):
+            with self.subTest(security=security), ExitStack() as stack:
+                stack.enter_context(mock.patch.dict(os.environ, {}, clear=True))
+                stack.enter_context(mock.patch.object(monitor, 'imap_settings', return_value=(
+                    'user@example.com', 'synthetic-password', 'mail.example.com', 993, security,
+                )))
+                constructor = stack.enter_context(mock.patch.object(
+                    monitor.imaplib, 'IMAP4_SSL' if security == 'ssl' else 'IMAP4',
+                ))
+                client = constructor.return_value
+                client.select.return_value = ('OK', [])
+                self.assertIs(monitor._connect_imap('user@example.com', 'synthetic-password'), client)
+                kwargs = constructor.call_args.kwargs if security == 'ssl' else client.starttls.call_args.kwargs
+                context = kwargs['ssl_context']
+                self.assertTrue(context.check_hostname)
+                self.assertEqual(context.verify_mode, monitor.ssl.CERT_REQUIRED)
+                client.login.assert_called_once_with('user@example.com', 'synthetic-password')
+
+    def test_smtp_tls_authenticates_server(self):
+        monitor = load_monitor()
+        for security in ('ssl', 'starttls'):
+            with self.subTest(security=security), ExitStack() as stack:
+                stack.enter_context(mock.patch.dict(os.environ, {
+                    'MAIL_USER': 'sender@example.com', 'MAIL_PASS': 'synthetic-password',
+                    'MAIL_TO': 'recipient@example.com',
+                }, clear=True))
+                stack.enter_context(mock.patch.object(monitor, 'smtp_settings', return_value=(
+                    'mail.example.com', 465, security,
+                )))
+                constructor = stack.enter_context(mock.patch.object(
+                    monitor.smtplib, 'SMTP_SSL' if security == 'ssl' else 'SMTP',
+                ))
+                client = constructor.return_value.__enter__.return_value
+                monitor.send_smtp_mail('test', 'body')
+                kwargs = constructor.call_args.kwargs if security == 'ssl' else client.starttls.call_args.kwargs
+                context = kwargs['context']
+                self.assertTrue(context.check_hostname)
+                self.assertEqual(context.verify_mode, monitor.ssl.CERT_REQUIRED)
+                client.login.assert_called_once_with('sender@example.com', 'synthetic-password')
+
+    def test_imap_certificate_failure_prevents_login(self):
+        monitor = load_monitor()
+        with mock.patch.object(monitor, 'imap_settings', return_value=(
+            'user@example.com', 'synthetic-password', 'mail.example.com', 143, 'starttls',
+        )):
+            with mock.patch.object(monitor.imaplib, 'IMAP4') as constructor:
+                client = constructor.return_value
+                client.starttls.side_effect = monitor.ssl.SSLCertVerificationError('synthetic failure')
+                with self.assertRaises(monitor.ssl.SSLCertVerificationError):
+                    monitor._connect_imap('user@example.com', 'synthetic-password')
+                client.login.assert_not_called()
+
+    def test_smtp_certificate_failure_prevents_login(self):
+        monitor = load_monitor()
+        with mock.patch.dict(os.environ, {
+            'MAIL_USER': 'sender@example.com', 'MAIL_PASS': 'synthetic-password',
+            'MAIL_TO': 'recipient@example.com',
+        }, clear=True):
+            with mock.patch.object(monitor, 'smtp_settings', return_value=('mail.example.com', 587, 'starttls')):
+                with mock.patch.object(monitor.smtplib, 'SMTP') as constructor:
+                    client = constructor.return_value.__enter__.return_value
+                    client.starttls.side_effect = monitor.ssl.SSLCertVerificationError('synthetic failure')
+                    with self.assertRaises(monitor.ssl.SSLCertVerificationError):
+                        monitor.send_smtp_mail('test', 'body')
+                    client.login.assert_not_called()
+                    client.send_message.assert_not_called()
+
     def test_extracts_eight_digit_code_from_ikuuu_email(self):
         monitor = load_monitor()
         message = (

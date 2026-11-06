@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 import sys
 import time
 import base64
+import subprocess
+import ssl
 from bs4 import BeautifulSoup
 
 LOGIN_ACCOUNTS = [
@@ -264,11 +266,11 @@ def _connect_imap(account_email, mailbox_password):
         mailbox_password,
     )
     if security == "ssl":
-        client = imaplib.IMAP4_SSL(host, port, timeout=30)
+        client = imaplib.IMAP4_SSL(host, port, timeout=30, ssl_context=ssl.create_default_context())
     else:
         client = imaplib.IMAP4(host, port, timeout=30)
         if security == "starttls":
-            client.starttls()
+            client.starttls(ssl_context=ssl.create_default_context())
     client.login(username, password)
     folder = os.getenv("IKUUU_IMAP_FOLDER", "INBOX").strip() or "INBOX"
     status, _ = client.select(folder, readonly=True)
@@ -409,14 +411,14 @@ def send_smtp_mail(subject, content):
     msg["To"] = ", ".join(recipients)
 
     if security == "ssl":
-        with smtplib.SMTP_SSL(host, port, timeout=30) as server:
+        with smtplib.SMTP_SSL(host, port, timeout=30, context=ssl.create_default_context()) as server:
             server.login(smtp_username, mail_pass)
             server.send_message(msg, from_addr=mail_user, to_addrs=recipients)
     else:
         with smtplib.SMTP(host, port, timeout=30) as server:
             if security == "starttls":
                 server.ehlo()
-                server.starttls()
+                server.starttls(context=ssl.create_default_context())
                 server.ehlo()
             server.login(smtp_username, mail_pass)
             server.send_message(msg, from_addr=mail_user, to_addrs=recipients)
@@ -424,11 +426,12 @@ def send_smtp_mail(subject, content):
 
 def get_login_opts():
     enabled = _env_bool('IKUUU_CAPTCHA_SOLVER_ENABLED', 'CAPTCHA_SOLVER_ENABLED', default=True)
-    provider = os.getenv('IKUUU_CAPTCHA_PROVIDER') or os.getenv('CAPTCHA_PROVIDER') or 'capsolver'
+    provider = (os.getenv('IKUUU_CAPTCHA_PROVIDER') or os.getenv('CAPTCHA_PROVIDER') or 'local').strip().lower()
     fallback_provider = os.getenv('IKUUU_CAPTCHA_FALLBACK_PROVIDER') or os.getenv(
-        'CAPTCHA_FALLBACK_PROVIDER') or 'anticaptcha'
+        'CAPTCHA_FALLBACK_PROVIDER') or ('anticaptcha' if provider != 'local' else '')
     timeout_seconds = _env_int(['IKUUU_CAPTCHA_TIMEOUT_SECONDS', 'CAPTCHA_TIMEOUT_SECONDS'], 120)
     poll_interval_seconds = _env_int(['IKUUU_CAPTCHA_POLL_INTERVAL_SECONDS', 'CAPTCHA_POLL_INTERVAL_SECONDS'], 3)
+    max_attempts = _env_int(['IKUUU_CAPTCHA_MAX_ATTEMPTS'], 3)
     remember_me = os.getenv('IKUUU_REMEMBER_ME')
     if remember_me is None:
         remember_me = 'off'
@@ -446,6 +449,7 @@ def get_login_opts():
             'fallback_provider': fallback_provider,
             'timeout_seconds': timeout_seconds,
             'poll_interval_seconds': poll_interval_seconds,
+            'max_attempts': max_attempts,
         }
     }
 
@@ -590,9 +594,45 @@ def solve_captcha_anticaptcha(base_url, captcha_id, init_params, solver_cfg):
     return None, 'Anti-Captcha 解码超时'
 
 
+def solve_captcha_local(base_url, captcha_id, init_params, solver_cfg):
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'local_captcha.py')
+    if not os.path.isfile(script):
+        return None, '缺少 local_captcha.py，请部署完整仓库而非只下载签到脚本'
+    timeout = int(solver_cfg.get('timeout_seconds', 120))
+    config = {
+        'captcha_id': captcha_id,
+        'base_url': base_url,
+        'timeout_seconds': timeout,
+        'max_attempts': int(solver_cfg.get('max_attempts', 3)),
+        'risk_type': (init_params or {}).get('riskType'),
+    }
+    if not 1 <= timeout <= 600:
+        return None, '本地验证码超时须为 1–600 秒'
+    try:
+        completed = subprocess.run(
+            [sys.executable, script], input=json.dumps(config),
+            capture_output=True, encoding='utf-8', timeout=timeout, check=False,
+        )
+        result = json.loads(completed.stdout)
+    except subprocess.TimeoutExpired:
+        return None, '本地验证码处理超时，识别进程已终止'
+    except (OSError, ValueError):
+        return None, '本地识别进程启动失败或返回异常，请检查 requirements-local.txt 依赖'
+    if not isinstance(result, dict):
+        return None, '本地识别进程返回格式错误'
+    solution = result.get('solution')
+    fields = ('lot_number', 'captcha_output', 'pass_token', 'gen_time')
+    if completed.returncode == 0 and isinstance(solution, dict) and all(isinstance(solution.get(key), str) and solution[key] for key in fields):
+        return {key: solution[key] for key in fields}, None
+    return None, result.get('error') or '本地识别未返回完整验证凭据'
+
+
 def solve_geetest_v4(base_url, captcha_id, init_params, solver_cfg, stats=None):
     providers = []
-    primary = solver_cfg.get('provider', 'capsolver')
+    primary = solver_cfg.get('provider', 'local')
+    if primary == 'local':
+        print('  [验证码] 使用本地识别，不调用第三方识别 API', flush=True)
+        return solve_captcha_local(base_url, captcha_id, init_params, solver_cfg)
     fallback = solver_cfg.get('fallback_provider')
     if primary:
         providers.append(primary)
@@ -624,11 +664,12 @@ def solve_geetest_v4(base_url, captcha_id, init_params, solver_cfg, stats=None):
 
 
 def get_captcha_info():
-    enabled = os.getenv("IKUUU_CAPTCHA_SOLVER_ENABLED", "0") == "1"
-    provider = os.getenv("IKUUU_CAPTCHA_PROVIDER", "capsolver")
-
-    if not enabled:
-        return None  # 不显示
+    config = get_login_opts()['captcha_solver']
+    provider = config['provider']
+    if not config['enabled']:
+        return None
+    if provider == 'local':
+        return '验证码模式：本地识别（无第三方识别 API）'
 
     if provider == "capsolver":
         api_key = os.getenv("IKUUU_CAPSOLVER_API_KEY") or os.getenv("CAPSOLVER_API_KEY")
@@ -661,12 +702,10 @@ def get_captcha_info():
 
 
 def get_captcha_provider_only():
-    enabled = os.getenv("IKUUU_CAPTCHA_SOLVER_ENABLED", "0") == "1"
-    if not enabled:
+    config = get_login_opts()['captcha_solver']
+    if not config['enabled']:
         return None
-
-    provider = os.getenv("IKUUU_CAPTCHA_PROVIDER", "capsolver")
-    return f"已使用 {provider}"
+    return f"验证码模式：{config['provider']}"
 
 
 def detect_captcha(html):
@@ -978,6 +1017,8 @@ def update_self_host(new_host):
     """
     更新脚本中的域名
     """
+    if os.getenv("IKUUU_DISABLE_SELF_UPDATE", "0") == "1":
+        return False
     script_path = os.path.abspath(__file__)
     try:
         with open(script_path, "r", encoding="utf-8") as f:
@@ -1962,6 +2003,8 @@ if __name__ == "__main__":
         print(f"   下次流量重置: {res['reset_days']}天")
         print(f"   会员到期: {res['expire_date']}")
         print(f"   钱包余额: {res['balance']}")
+
+    raise SystemExit(0 if success_count == len(results) else 1)
 
     print("=" * 50)
     print("🏁 脚本执行完成")
