@@ -16,6 +16,8 @@ jobs:
   checkin:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      IKUUU_COOKIE_CACHE_ENABLED: ${{ secrets.COOKIE_CACHE_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -33,6 +35,14 @@ jobs:
           python -m pip install --no-deps rapidocr_onnxruntime==1.4.4
       - name: Run offline regression tests
         run: python -m unittest discover -s tests -v
+      - name: Restore encrypted cookie cache
+        if: env.IKUUU_COOKIE_CACHE_ENABLED == 'true'
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ${{ runner.temp }}/ikuuu-cookie.enc
+          key: ikuuu-cookie-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ikuuu-cookie-
       - name: Check in with local recognition
         env:
           PYTHONUNBUFFERED: '1'
@@ -44,7 +54,16 @@ jobs:
           IKUUU_CAPTCHA_MAX_ATTEMPTS: ${{ vars.IKUUU_CAPTCHA_MAX_ATTEMPTS || '5' }}
           IKUUU_DISABLE_SELF_UPDATE: '1'
           IKUUU_DATA_DIR: ${{ runner.temp }}/ikuuu-data
+          IKUUU_COOKIE_KEY: ${{ secrets.COOKIE_CACHE_KEY }}
+          IKUUU_COOKIE_CACHE_FILE: ${{ runner.temp }}/ikuuu-cookie.enc
           MAIL_USER: ${{ secrets.MAIL_USER }}
           MAIL_PASS: ${{ secrets.MAIL_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: python auto_check_in_ikuuu.py
+      - name: Save encrypted cookie cache
+        if: always() && env.IKUUU_COOKIE_CACHE_ENABLED == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ${{ runner.temp }}/ikuuu-cookie.enc
+          key: ikuuu-cookie-${{ github.run_id }}-${{ github.run_attempt }}

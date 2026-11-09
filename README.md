@@ -94,11 +94,11 @@ QQ、163、126 等邮箱通常应填写邮箱后台生成的授权码，不要�
 
 仓库包含 `.github/workflows/checkin.yml`，每天北京时间 08:17（UTC 00:17）调度，也支持手动运行；GitHub 定时任务可能延迟。
 
-1. 在仓库的 Actions Secrets 中添加 `ACCOUNTS`，可选添加 `MAIL_USER`、`MAIL_PASS`、`MAIL_TO`。
+1. 在仓库的 Actions Secrets 中添加 `ACCOUNTS`，可选添加 `MAIL_USER`、`MAIL_PASS`、`MAIL_TO`。可选添加 `COOKIE_CACHE_KEY`（一段高强度随机口令）启用加密 Cookie 缓存。
 2. 如需指定域名，在 Actions Variables 中添加 `IKUUU_DOMAIN`；可选设置 `IKUUU_CAPTCHA_TIMEOUT_SECONDS` 和 `IKUUU_CAPTCHA_MAX_ATTEMPTS`。
 3. 在 Actions 中启用并手动运行 **Local iKuuu check-in**。自定义 SMTP / IMAP 等配置可作为环境变量加入签到步骤，密码只能使用 Secrets。
 
-此 workflow 固定为本地识别、只读仓库权限；安装依赖和离线测试步骤不接收账号 Secrets。仅缓存 pip 依赖，不缓存或上传 Cookie，因此每个新 runner 通常需要重新登录。任何账号签到失败会返回非零退出码。首次上线应查看实际日志验证，离线测试通过不代表极验服务端一定接受结果。
+此 workflow 固定为本地识别、只读仓库权限；安装依赖和离线测试步骤不接收账号 Secrets。配置 `COOKIE_CACHE_KEY` 后，登录会话会用 PBKDF2 派生密钥做 AES-GCM 加密后存入 Actions cache，跨运行复用：会话有效时直接跳过验证码，失效才重新登录过验证，从而显著降低验证码暴露频率。cache 中只有密文，不含明文 Cookie；未配置该 Secret 时不缓存 Cookie、行为同旧版（每次重新登录）。任何账号签到失败会返回非零退出码。首次上线应查看实际日志验证，离线测试通过不代表极验服务端一定接受结果。
 
 ### 方式二：Python / 青龙 / Docker
 

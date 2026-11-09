@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 import sys
 import time
 import base64
+import hashlib
+import atexit
 import subprocess
 import ssl
 from bs4 import BeautifulSoup
@@ -1226,6 +1228,69 @@ def validate_cookie(session, base_url):
         return False
 
 
+def cookie_cache_key():
+    passphrase = os.getenv("IKUUU_COOKIE_KEY", "")
+    if not passphrase:
+        return None
+    return hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"),
+                               b"ikuuu-cookie-cache-v1", 200_000, dklen=32)
+
+
+def encrypt_cookie_store(store, key):
+    from Crypto.Cipher import AES
+
+    nonce = os.urandom(16)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(
+        json.dumps(store, ensure_ascii=False).encode("utf-8"))
+    return base64.b64encode(nonce + tag + ciphertext).decode("ascii")
+
+
+def decrypt_cookie_store(blob, key):
+    from Crypto.Cipher import AES
+
+    try:
+        raw = base64.b64decode(blob)
+        nonce, tag, ciphertext = raw[:16], raw[16:32], raw[32:]
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        store = json.loads(cipher.decrypt_and_verify(ciphertext, tag).decode("utf-8"))
+        return store if isinstance(store, dict) else {}
+    except Exception:
+        return {}
+
+
+def restore_encrypted_cookie_cache():
+    key = cookie_cache_key()
+    path = os.getenv("IKUUU_COOKIE_CACHE_FILE", "")
+    if not key or not path or not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r", encoding="ascii") as handle:
+            blob = handle.read().strip()
+    except OSError:
+        return False
+    store = decrypt_cookie_store(blob, key)
+    if not store:
+        return False
+    save_cookie_store(store)
+    print("🍪 已恢复加密缓存的登录会话", flush=True)
+    return True
+
+
+def persist_encrypted_cookie_cache():
+    key = cookie_cache_key()
+    path = os.getenv("IKUUU_COOKIE_CACHE_FILE", "")
+    if not key or not path:
+        return False
+    try:
+        with open(path, "w", encoding="ascii") as handle:
+            handle.write(encrypt_cookie_store(load_cookie_store(), key))
+        return True
+    except OSError as error:
+        print(f"⚠️ 写入加密cookie缓存失败: {error}", flush=True)
+        return False
+
+
 def do_checkin_with_session(session, base_url):
     print("  [签到] 正在读取当前剩余流量", flush=True)
     flow_value, flow_unit = get_remaining_flow(session, base_url)
@@ -1918,6 +1983,9 @@ if __name__ == "__main__":
 
     print("🚀 iKuuu签到脚本启动")
     print("=" * 50)
+
+    restore_encrypted_cookie_cache()
+    atexit.register(persist_encrypted_cookie_cache)
 
     # ==================== 域名检查和更新 ====================
     # 首先检查是否有域名更新通知

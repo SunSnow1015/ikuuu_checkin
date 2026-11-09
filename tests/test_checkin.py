@@ -1,4 +1,7 @@
+import base64
 import importlib.util
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -79,6 +82,67 @@ class CheckinTests(unittest.TestCase):
             timeout=20,
             allow_redirects=True,
         )
+
+
+class CookieCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cookie_file = os.path.join(self.tmp.name, "cookies.json")
+        self.cache_file = os.path.join(self.tmp.name, "cookie.enc")
+        patcher = mock.patch.object(self.monitor, "COOKIE_FILE", self.cookie_file)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        env = mock.patch.dict(os.environ, {
+            "IKUUU_COOKIE_KEY": "test-passphrase",
+            "IKUUU_COOKIE_CACHE_FILE": self.cache_file,
+        })
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_key_requires_passphrase_and_is_32_bytes(self):
+        self.assertEqual(len(self.monitor.cookie_cache_key()), 32)
+        with mock.patch.dict(os.environ, {"IKUUU_COOKIE_KEY": ""}):
+            self.assertIsNone(self.monitor.cookie_cache_key())
+
+    def test_encrypt_decrypt_roundtrip(self):
+        store = {"a@@b": {"cookies": {"sid": "x"}, "saved_at": 1}}
+        key = self.monitor.cookie_cache_key()
+        blob = self.monitor.encrypt_cookie_store(store, key)
+        self.assertNotIn("sid", blob)
+        self.assertEqual(self.monitor.decrypt_cookie_store(blob, key), store)
+
+    def test_wrong_key_or_tampered_blob_yields_empty(self):
+        key = self.monitor.cookie_cache_key()
+        blob = self.monitor.encrypt_cookie_store({"k": {"v": 1}}, key)
+        self.assertEqual(self.monitor.decrypt_cookie_store(blob, b"\0" * 32), {})
+        raw = bytearray(base64.b64decode(blob))
+        raw[-1] ^= 0xFF
+        self.assertEqual(self.monitor.decrypt_cookie_store(base64.b64encode(bytes(raw)).decode(), key), {})
+        self.assertEqual(self.monitor.decrypt_cookie_store("not-base64!!", key), {})
+
+    def test_restore_loads_cached_session_into_cookie_file(self):
+        store = {"a@@b": {"cookies": {"sid": "x"}, "saved_at": 1}}
+        with open(self.cache_file, "w", encoding="ascii") as handle:
+            handle.write(self.monitor.encrypt_cookie_store(store, self.monitor.cookie_cache_key()))
+        self.assertTrue(self.monitor.restore_encrypted_cookie_cache())
+        self.assertEqual(self.monitor.load_cookie_store(), store)
+
+    def test_restore_without_key_or_file_is_noop(self):
+        self.assertFalse(self.monitor.restore_encrypted_cookie_cache())
+        with open(self.cache_file, "w", encoding="ascii") as handle:
+            handle.write(self.monitor.encrypt_cookie_store({"k": {}}, self.monitor.cookie_cache_key()))
+        with mock.patch.dict(os.environ, {"IKUUU_COOKIE_KEY": ""}):
+            self.assertFalse(self.monitor.restore_encrypted_cookie_cache())
+
+    def test_persist_writes_decryptable_cache(self):
+        store = {"a@@b": {"cookies": {"sid": "x"}, "saved_at": 1}}
+        self.monitor.save_cookie_store(store)
+        self.assertTrue(self.monitor.persist_encrypted_cookie_cache())
+        with open(self.cache_file, "r", encoding="ascii") as handle:
+            blob = handle.read()
+        self.assertEqual(self.monitor.decrypt_cookie_store(blob, self.monitor.cookie_cache_key()), store)
 
 
 if __name__ == "__main__":
