@@ -143,7 +143,7 @@ def shape_scores(prompts, candidates):
 
 def unique_assignment(scores, threshold=0.72, margin=0.035):
     rows, columns = scores.shape
-    if not 1 <= rows <= 5 or not rows <= columns <= 12:
+    if not 1 <= rows <= 5 or not rows <= columns <= 16:
         raise RecognitionError('可用目标数量与提示不匹配')
     options = []
     for assignment in itertools.permutations(range(columns), rows):

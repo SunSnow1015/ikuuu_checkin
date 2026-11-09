@@ -41,7 +41,7 @@ jobs:
           IKUUU_CAPTCHA_SOLVER_ENABLED: '1'
           IKUUU_CAPTCHA_PROVIDER: local
           IKUUU_CAPTCHA_TIMEOUT_SECONDS: ${{ vars.IKUUU_CAPTCHA_TIMEOUT_SECONDS || '120' }}
-          IKUUU_CAPTCHA_MAX_ATTEMPTS: ${{ vars.IKUUU_CAPTCHA_MAX_ATTEMPTS || '3' }}
+          IKUUU_CAPTCHA_MAX_ATTEMPTS: ${{ vars.IKUUU_CAPTCHA_MAX_ATTEMPTS || '5' }}
           IKUUU_DISABLE_SELF_UPDATE: '1'
           IKUUU_DATA_DIR: ${{ runner.temp }}/ikuuu-data
           MAIL_USER: ${{ secrets.MAIL_USER }}
