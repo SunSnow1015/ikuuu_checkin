@@ -92,7 +92,7 @@ QQ、163、126 等邮箱通常应填写邮箱后台生成的授权码，不要�
 ## 3. 自动运行
 ### 方式一：GitHub Actions（优先）
 
-仓库包含 `.github/workflows/checkin.yml`，每天北京时间 08:17（UTC 00:17）调度，也支持手动运行；GitHub 定时任务可能延迟。
+仓库包含 `.github/workflows/checkin.yml`，每天北京时间 00:00（UTC 16:00）调度，也支持手动运行；GitHub 定时任务可能延迟。
 
 1. 在仓库的 Actions Secrets 中添加 `ACCOUNTS`，可选添加 `MAIL_USER`、`MAIL_PASS`、`MAIL_TO`。可选添加 `COOKIE_CACHE_KEY`（一段高强度随机口令）启用加密 Cookie 缓存。
 2. 如需指定域名，在 Actions Variables 中添加 `IKUUU_DOMAIN`；可选设置 `IKUUU_CAPTCHA_TIMEOUT_SECONDS` 和 `IKUUU_CAPTCHA_MAX_ATTEMPTS`。
