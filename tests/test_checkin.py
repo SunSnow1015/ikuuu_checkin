@@ -145,5 +145,27 @@ class CookieCacheTests(unittest.TestCase):
         self.assertEqual(self.monitor.decrypt_cookie_store(blob, self.monitor.cookie_cache_key()), store)
 
 
+class SessionCookieTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cookie_file = os.path.join(self.tmp.name, "cookies.json")
+        patcher = mock.patch.object(self.monitor, "COOKIE_FILE", self.cookie_file)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_old_cookie_is_reused_without_age_cap(self):
+        store = {"a@@b": {"email": "a", "base_url": "https://b",
+                          "saved_at": 1, "cookies": {"sid": "x"}}}
+        self.monitor.save_cookie_store(store)
+        self.assertEqual(self.monitor.load_session_cookie("a", "https://b"), {"sid": "x"})
+
+    def test_missing_or_empty_cookie_returns_none(self):
+        self.assertIsNone(self.monitor.load_session_cookie("a", "https://b"))
+        self.monitor.save_cookie_store({"a@@b": {"cookies": {}}})
+        self.assertIsNone(self.monitor.load_session_cookie("a", "https://b"))
+
+
 if __name__ == "__main__":
     unittest.main()

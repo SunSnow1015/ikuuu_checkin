@@ -1133,7 +1133,6 @@ DATA_DIR = os.path.expanduser(
 )
 os.makedirs(DATA_DIR, exist_ok=True)
 COOKIE_FILE = os.path.join(DATA_DIR, "ikuuu_cookies.json")
-COOKIE_MAX_AGE_DAYS = 7
 
 
 def load_cookie_store():
@@ -1178,11 +1177,6 @@ def load_session_cookie(email, base_url):
     store = load_cookie_store()
     item = store.get(key)
     if not item:
-        return None
-
-    saved_at = int(item.get("saved_at", 0))
-    max_age = COOKIE_MAX_AGE_DAYS * 24 * 3600
-    if not saved_at or time.time() - saved_at > max_age:
         return None
 
     cookies = item.get("cookies")
