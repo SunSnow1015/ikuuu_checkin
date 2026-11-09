@@ -28,7 +28,9 @@ jobs:
             requirements.txt
             requirements-local.txt
       - name: Install local recognition dependencies
-        run: python -m pip install -r requirements-local.txt
+        run: |
+          python -m pip install -r requirements-local.txt
+          python -m pip install --no-deps rapidocr_onnxruntime==1.4.4
       - name: Run offline regression tests
         run: python -m unittest discover -s tests -v
       - name: Check in with local recognition

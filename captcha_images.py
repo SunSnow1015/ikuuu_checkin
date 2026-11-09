@@ -186,41 +186,71 @@ def png_on_white(image, angle=0):
 
 class WordRecognizer:
     def __init__(self):
-        import ddddocr
+        from rapidocr_onnxruntime import RapidOCR
 
-        self.detector = ddddocr.DdddOcr(ocr=False, det=True, show_ad=False)
-        self.ocr = ddddocr.DdddOcr(show_ad=False)
-        self.beta_ocr = ddddocr.DdddOcr(beta=True, show_ad=False)
+        self.engine = RapidOCR()
 
-    def agreed_character(self, image, angle=0):
-        content = png_on_white(image, angle)
-        first = self.ocr.classification(content).strip()
-        second = self.beta_ocr.classification(content).strip()
-        return first if len(first) == 1 and first == second else None
+    def _results(self, content):
+        results, _ = self.engine(content, use_cls=False)
+        return results or []
+
+    def _prompt_character(self, content):
+        results, _ = self.engine(content, use_det=False, use_cls=False)
+        texts = [text.strip() for text, score in (results or [])
+                 if score >= 0.5 and len(text.strip()) == 1]
+        if len(texts) != 1:
+            raise RecognitionError('提示文字无法可靠识别')
+        return texts[0]
+
+    @staticmethod
+    def _axis_box(box):
+        xs = [point[0] for point in box]
+        ys = [point[1] for point in box]
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    @staticmethod
+    def _split(box, count):
+        x0, y0, x1, y1 = box
+        if count == 1:
+            return [box]
+        parts = []
+        if (x1 - x0) >= (y1 - y0):
+            for index in range(count):
+                parts.append((x0 + (x1 - x0) * index / count, y0,
+                              x0 + (x1 - x0) * (index + 1) / count, y1))
+        else:
+            for index in range(count):
+                parts.append((x0, y0 + (y1 - y0) * index / count,
+                              x1, y0 + (y1 - y0) * (index + 1) / count))
+        return parts
+
+    def _contains(self, image, box, character):
+        x0, y0, x1, y1 = (int(round(value)) for value in box)
+        crop = image[max(0, y0):min(image.shape[0], y1), max(0, x0):min(image.shape[1], x1)]
+        results, _ = self.engine(png_on_white(crop), use_det=False, use_cls=False)
+        return any(score >= 0.5 and character in text for text, score in (results or []))
 
     def match(self, background, prompts):
         image = read_image(background)
-        targets = [self.agreed_character(read_image(prompt)) for prompt in prompts]
-        if any(target is None for target in targets) or len(set(targets)) != len(targets):
-            raise RecognitionError('提示文字无法可靠识别或存在重复字')
-        boxes = self.detector.detection(background)
-        if not len(targets) <= len(boxes) <= 12:
+        targets = [self._prompt_character(prompt) for prompt in prompts]
+        if len(set(targets)) != len(targets):
+            raise RecognitionError('提示文字存在重复字')
+        boxes = [(box, text.strip(), score) for box, text, score in self._results(background)
+                 if score >= 0.5 and text.strip()]
+        if len(boxes) > 12 or sum(len(text) for _, text, _ in boxes) < len(targets):
             raise RecognitionError('文字目标检测数量异常')
+        height, width = image.shape[:2]
         matches = {target: [] for target in targets}
-        for box in boxes:
-            left, top, right, bottom = (int(value) for value in box)
-            if not 0 <= left < right <= image.shape[1] or not 0 <= top < bottom <= image.shape[0]:
+        for box, text, _ in boxes:
+            axis = self._axis_box(box)
+            if not 0 <= axis[0] < axis[2] <= width or not 0 <= axis[1] < axis[3] <= height:
                 raise RecognitionError('文字检测框超出图片范围')
-            crop = image[top:bottom, left:right]
-            recognized = set()
-            for angle in (0, -15, 15, -30, 30, -45, 45):
-                character = self.agreed_character(crop, angle)
-                if character in matches:
-                    recognized.add(character)
-            if len(recognized) > 1:
-                raise RecognitionError('旋转文字识别结果不一致')
-            for character in recognized:
-                matches[character].append(((left + right) / 2, (top + bottom) / 2))
-        if any(len(matches[target]) != 1 for target in targets):
+            for character, part in zip(text, self._split(axis, len(text))):
+                if character not in matches:
+                    continue
+                if not self._contains(image, part, character):
+                    raise RecognitionError('文字定位复核不一致，不提交点击结果')
+                matches[character].append(((part[0] + part[2]) / 2, (part[1] + part[3]) / 2))
+        if any(len(points) != 1 for points in matches.values()):
             raise RecognitionError('文字识别结果不完整或存在歧义')
-        return [matches[target][0] for target in targets], (image.shape[1], image.shape[0])
+        return [matches[target][0] for target in targets], (width, height)

@@ -61,14 +61,14 @@ Settings → Secrets and variables → Actions
 ### 本地识别的范围
 
 - 图标：按提示图进行彩色目标分离、旋转与仿射图形匹配和一对一分配，不依赖固定类别的图标分类模型。低匹配分或结果有歧义时拒绝提交。
-- 文字：使用 ddddocr 自带的检测、两套 OCR ONNX 模型，在多个角度核对识别结果；提示字识别不一致、缺字或重复匹配时拒绝提交。真实 iKuuu 文字题尚未验证，不能承诺通过率。
+- 文字：使用 RapidOCR（DBNet 场景文字检测 + ONNX 识别）定位背景手绘字并读字；相邻字被合并到一个检测框时按横/竖排拆分，再对每个目标字的子框复核识别。提示字无法识别、缺字、重复匹配或复核不一致时拒绝提交。已在 2 组真实 iKuuu 文字题上离线匹配出正确点击位置，但尚未向极验提交，不能承诺通过率。
 - 运行时按极验实际返回的 `captcha_type` 分流，不强制切成图标题。当前仅支持 `icon` / `word`，其他题型明确报错。
 - 参考 [GeekedTest](https://github.com/SunSnow1015/GeekedTest) 的协议实现，并保留其 MIT 许可；参考 [Geetest4_yolov8](https://github.com/SunSnow1015/Geetest4_yolov8) 的检测与匹配思路，但不引入其大体积 Torch/Paddle 环境或授权不明确的权重。
 - 本地模式即使残留外部 API Key 或 fallback 配置也不会回退付费识别。仍需联网访问 iKuuu、极验官方加载/图片/验证接口，这不是离线签到。
 - 模型随 Python 依赖在安装时下载，运行时不下载模型，也不需要 GPU、浏览器或自建识别 HTTP 服务。首次安装需要额外磁盘空间；建议使用 Linux x86_64 的 Actions 或容器。
 - 协议更新仍可能导致失败；静态提取客户端参数不等于保证所有后续版本可用，不执行下载的 JavaScript。
 
-当前验收仅限本地：3 组已保存的真实图标题均完成正确顺序匹配，合成中文场景完成检测与双模型识别；这些样本不代表总体通过率。尚未向真实极验提交结果或完成登录签到，真实文字题、GitHub Actions 执行、Docker 运行及 OpenWrt 运行均未实测。
+当前验收仅限本地：3 组已保存的真实图标题均完成正确顺序匹配；2 组真实文字题（勾/魂/面、菜/头/饼）离线匹配出的点击中心均落在对应字上；合成中文场景完成检测与识别。这些样本不代表总体通过率。尚未向真实极验提交结果或完成登录签到，GitHub Actions 执行、Docker 运行及 OpenWrt 运行均未实测。
 
 ---
 **ACCOUNTS 写法：**  
@@ -106,6 +106,7 @@ Python 3.10–3.12 环境下载完整仓库后执行：
 
 ```sh
 python -m pip install -r requirements-local.txt
+python -m pip install --no-deps rapidocr_onnxruntime==1.4.4
 python -m unittest discover -s tests -v
 python auto_check_in_ikuuu.py
 ```

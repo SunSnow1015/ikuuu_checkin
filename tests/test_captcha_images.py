@@ -112,38 +112,97 @@ class ImageTests(unittest.TestCase):
         with self.assertRaises(RecognitionError):
             match_icons(png(Image.new('RGB', (300, 200), 'white')), [png(shape('circle'))])
 
-    def test_word_requires_model_agreement(self):
+    def test_word_prompt_requires_single_character(self):
         recognizer = WordRecognizer.__new__(WordRecognizer)
-        recognizer.ocr = mock.Mock()
-        recognizer.beta_ocr = mock.Mock()
-        recognizer.ocr.classification.return_value = '明'
-        recognizer.beta_ocr.classification.return_value = '日'
-        self.assertIsNone(recognizer.agreed_character(np.array(shape('circle'))))
-        recognizer.beta_ocr.classification.return_value = '明'
-        self.assertEqual(recognizer.agreed_character(np.array(shape('circle'))), '明')
+        recognizer.engine = mock.Mock(return_value=([['明', 0.9]], None))
+        self.assertEqual(recognizer._prompt_character(b'x'), '明')
+        recognizer.engine.return_value = ([['明', 0.9], ['天', 0.9]], None)
+        with self.assertRaises(RecognitionError):
+            recognizer._prompt_character(b'x')
+        recognizer.engine.return_value = ([['明天', 0.9]], None)
+        with self.assertRaises(RecognitionError):
+            recognizer._prompt_character(b'x')
+        recognizer.engine.return_value = ([['明', 0.2]], None)
+        with self.assertRaises(RecognitionError):
+            recognizer._prompt_character(b'x')
+        recognizer.engine.return_value = (None, None)
+        with self.assertRaises(RecognitionError):
+            recognizer._prompt_character(b'x')
+
+    def test_word_split_follows_orientation(self):
+        horizontal = WordRecognizer._split((0, 0, 40, 20), 2)
+        self.assertEqual(horizontal, [(0, 0, 20, 20), (20, 0, 40, 20)])
+        vertical = WordRecognizer._split((0, 0, 20, 40), 2)
+        self.assertEqual(vertical, [(0, 0, 20, 20), (0, 20, 20, 40)])
+        self.assertEqual(WordRecognizer._split((0, 0, 40, 40), 1), [(0, 0, 40, 40)])
 
     def test_word_matching_preserves_prompt_order(self):
         recognizer = WordRecognizer.__new__(WordRecognizer)
-        recognizer.detector = mock.Mock()
-        recognizer.detector.detection.return_value = [[0, 0, 40, 40], [50, 50, 90, 90]]
-        recognizer.agreed_character = mock.Mock(side_effect=['明', '天'] + ['天'] * 7 + ['明'] * 7)
+        recognizer._prompt_character = mock.Mock(side_effect=['明', '天'])
+        recognizer._results = mock.Mock(return_value=[
+            ([[50, 50], [90, 50], [90, 90], [50, 90]], '天', 0.9),
+            ([[0, 0], [40, 0], [40, 40], [0, 40]], '明', 0.9),
+        ])
+        recognizer._contains = mock.Mock(return_value=True)
         points, size = recognizer.match(png(scene()), [png(shape('circle')), png(shape('book'))])
-        self.assertEqual(points, [(70, 70), (20, 20)])
+        self.assertEqual(points, [(20, 20), (70, 70)])
         self.assertEqual(size, (300, 200))
+
+    def test_word_merged_box_is_split_into_characters(self):
+        recognizer = WordRecognizer.__new__(WordRecognizer)
+        recognizer._prompt_character = mock.Mock(side_effect=['明', '天'])
+        recognizer._results = mock.Mock(return_value=[
+            ([[0, 0], [40, 0], [40, 40], [0, 40]], '明天', 0.9),
+        ])
+        recognizer._contains = mock.Mock(return_value=True)
+        points, _ = recognizer.match(png(scene()), [png(shape('circle')), png(shape('book'))])
+        self.assertEqual(points, [(10, 20), (30, 20)])
 
     def test_word_duplicates_are_rejected(self):
         recognizer = WordRecognizer.__new__(WordRecognizer)
-        recognizer.agreed_character = mock.Mock(return_value='明')
+        recognizer._prompt_character = mock.Mock(return_value='明')
         with self.assertRaises(RecognitionError):
             recognizer.match(png(scene()), [png(shape('circle')), png(shape('book'))])
 
     def test_word_unknown_target_is_rejected(self):
         recognizer = WordRecognizer.__new__(WordRecognizer)
-        recognizer.detector = mock.Mock()
-        recognizer.detector.detection.return_value = [[0, 0, 40, 40]]
-        recognizer.agreed_character = mock.Mock(side_effect=['明'] + [None] * 7)
+        recognizer._prompt_character = mock.Mock(return_value='明')
+        recognizer._results = mock.Mock(return_value=[
+            ([[0, 0], [40, 0], [40, 40], [0, 40]], '天', 0.9),
+        ])
         with self.assertRaisesRegex(RecognitionError, '不完整'):
             recognizer.match(png(scene()), [png(shape('circle'))])
+
+    def test_word_repeated_target_match_is_rejected(self):
+        recognizer = WordRecognizer.__new__(WordRecognizer)
+        recognizer._prompt_character = mock.Mock(return_value='明')
+        recognizer._results = mock.Mock(return_value=[
+            ([[0, 0], [40, 0], [40, 40], [0, 40]], '明', 0.9),
+            ([[50, 50], [90, 50], [90, 90], [50, 90]], '明', 0.9),
+        ])
+        recognizer._contains = mock.Mock(return_value=True)
+        with self.assertRaisesRegex(RecognitionError, '歧义'):
+            recognizer.match(png(scene()), [png(shape('circle'))])
+
+    def test_word_confirmation_failure_rejects_submission(self):
+        recognizer = WordRecognizer.__new__(WordRecognizer)
+        recognizer._prompt_character = mock.Mock(return_value='明')
+        recognizer._results = mock.Mock(return_value=[
+            ([[0, 0], [40, 0], [40, 40], [0, 40]], '明', 0.9),
+        ])
+        recognizer._contains = mock.Mock(return_value=False)
+        with self.assertRaisesRegex(RecognitionError, '复核'):
+            recognizer.match(png(scene()), [png(shape('circle'))])
+
+    def test_word_confirmation_accepts_substring_reading(self):
+        recognizer = WordRecognizer.__new__(WordRecognizer)
+        recognizer.engine = mock.Mock(return_value=([['云动魂', 0.68]], None))
+        image = np.zeros((40, 40, 4), dtype=np.uint8)
+        self.assertTrue(recognizer._contains(image, (0, 0, 40, 40), '魂'))
+        recognizer.engine.return_value = ([['面', 0.99]], None)
+        self.assertFalse(recognizer._contains(image, (0, 0, 40, 40), '魂'))
+        recognizer.engine.return_value = ([['魂', 0.2]], None)
+        self.assertFalse(recognizer._contains(image, (0, 0, 40, 40), '魂'))
 
 
 if __name__ == '__main__':

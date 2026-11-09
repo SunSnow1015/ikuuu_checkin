@@ -617,7 +617,7 @@ def solve_captcha_local(base_url, captcha_id, init_params, solver_cfg):
     except subprocess.TimeoutExpired:
         return None, '本地验证码处理超时，识别进程已终止'
     except (OSError, ValueError):
-        return None, '本地识别进程启动失败或返回异常，请检查 requirements-local.txt 依赖'
+        return None, '本地识别进程启动失败或返回异常，请按 README 安装 requirements-local.txt 与 rapidocr_onnxruntime'
     if not isinstance(result, dict):
         return None, '本地识别进程返回格式错误'
     solution = result.get('solution')

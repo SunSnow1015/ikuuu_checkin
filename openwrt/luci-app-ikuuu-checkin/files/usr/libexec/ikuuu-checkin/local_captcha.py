@@ -172,7 +172,7 @@ def worker():
             solution = solver.solve()
         return {'solution': solution}
     except ImportError:
-        return {'error': '缺少本地识别依赖，请使用当前 Python 安装 requirements-local.txt'}
+        return {'error': '缺少本地识别依赖，请按 README 安装 requirements-local.txt 与 rapidocr_onnxruntime'}
     except requests.RequestException as error:
         return {'error': f'极验网络请求失败（{type(error).__name__}）'}
     except (ValueError, KeyError, TypeError, RuntimeError, TimeoutError) as error:
