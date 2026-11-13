@@ -3,6 +3,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -165,6 +166,139 @@ class SessionCookieTests(unittest.TestCase):
         self.assertIsNone(self.monitor.load_session_cookie("a", "https://b"))
         self.monitor.save_cookie_store({"a@@b": {"cookies": {}}})
         self.assertIsNone(self.monitor.load_session_cookie("a", "https://b"))
+
+
+class CookieValidationRetryTests(unittest.TestCase):
+    def test_valid_cookie_returns_true_without_retry(self):
+        monitor = load_monitor()
+        session = mock.Mock()
+        with mock.patch.object(
+            monitor, "validate_cookie", return_value=True
+        ) as validate_cookie, mock.patch.object(monitor.time, "sleep") as sleep:
+            self.assertTrue(
+                monitor.validate_cookie_with_retry(session, "https://ikuuu.example")
+            )
+        validate_cookie.assert_called_once_with(session, "https://ikuuu.example")
+        sleep.assert_not_called()
+
+    def test_transient_failure_then_success_retries_once(self):
+        monitor = load_monitor()
+        session = mock.Mock()
+        with mock.patch.object(
+            monitor, "validate_cookie", side_effect=[False, True]
+        ) as validate_cookie, mock.patch.object(monitor.time, "sleep") as sleep:
+            self.assertTrue(
+                monitor.validate_cookie_with_retry(session, "https://ikuuu.example")
+            )
+        self.assertEqual(validate_cookie.call_count, 2)
+        sleep.assert_called_once_with(2)
+
+    def test_exhausted_attempts_return_false(self):
+        monitor = load_monitor()
+        session = mock.Mock()
+        with mock.patch.object(
+            monitor, "validate_cookie", return_value=False
+        ) as validate_cookie, mock.patch.object(monitor.time, "sleep") as sleep:
+            self.assertFalse(
+                monitor.validate_cookie_with_retry(
+                    session, "https://ikuuu.example", attempts=3, delay=5
+                )
+            )
+        self.assertEqual(validate_cookie.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        sleep.assert_called_with(5)
+
+
+class LoginSessionVerificationTests(unittest.TestCase):
+    def _run_signin(self, stack, monitor, *, validate_side_effect, max_attempts=3):
+        session = mock.Mock()
+        stack.enter_context(
+            mock.patch.object(monitor.requests, "session", return_value=session)
+        )
+        stack.enter_context(
+            mock.patch.object(
+                monitor,
+                "get_login_opts",
+                return_value={"captcha_solver": {"max_attempts": max_attempts}},
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(monitor, "load_session_cookie", return_value=None)
+        )
+        build_login_body = stack.enter_context(
+            mock.patch.object(
+                monitor,
+                "build_login_body",
+                return_value=({"phase": "password"}, "https://ikuuu.example", None),
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                monitor,
+                "submit_login_request",
+                return_value=({"ret": 1}, None),
+            )
+        )
+        validate_cookie_with_retry = stack.enter_context(
+            mock.patch.object(
+                monitor,
+                "validate_cookie_with_retry",
+                side_effect=validate_side_effect,
+            )
+        )
+        save_session_cookie = stack.enter_context(
+            mock.patch.object(monitor, "save_session_cookie")
+        )
+        do_checkin_with_session = stack.enter_context(
+            mock.patch.object(
+                monitor,
+                "do_checkin_with_session",
+                return_value=(True, "签到成功", "10", "GB"),
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                monitor,
+                "get_user_info",
+                return_value=("10 GB", "1", "2026-12-31", "0"),
+            )
+        )
+        with mock.patch("builtins.print"):
+            result = monitor.ikuuu_signin("user@example.com", "ikuuu-password")
+        return {
+            "result": result,
+            "session": session,
+            "build_login_body": build_login_body,
+            "validate_cookie_with_retry": validate_cookie_with_retry,
+            "save_session_cookie": save_session_cookie,
+            "do_checkin_with_session": do_checkin_with_session,
+        }
+
+    def test_false_positive_login_retries_with_fresh_captcha_then_succeeds(self):
+        monitor = load_monitor()
+        with ExitStack() as stack:
+            ctx = self._run_signin(
+                stack, monitor, validate_side_effect=[False, True]
+            )
+        self.assertTrue(ctx["result"][0])
+        self.assertEqual(ctx["validate_cookie_with_retry"].call_count, 2)
+        self.assertEqual(ctx["build_login_body"].call_count, 2)
+        ctx["session"].cookies.clear.assert_called_once()
+        ctx["save_session_cookie"].assert_called_once()
+        ctx["do_checkin_with_session"].assert_called_once()
+
+    def test_persistent_false_positive_exhausts_and_fails_without_saving(self):
+        monitor = load_monitor()
+        with ExitStack() as stack:
+            ctx = self._run_signin(
+                stack, monitor, validate_side_effect=[False, False, False]
+            )
+        self.assertFalse(ctx["result"][0])
+        self.assertIn("会话未生效", ctx["result"][1])
+        self.assertEqual(ctx["validate_cookie_with_retry"].call_count, 3)
+        self.assertEqual(ctx["build_login_body"].call_count, 3)
+        ctx["save_session_cookie"].assert_not_called()
+        ctx["do_checkin_with_session"].assert_not_called()
 
 
 if __name__ == "__main__":

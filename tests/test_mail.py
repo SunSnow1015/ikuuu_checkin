@@ -213,6 +213,11 @@ class MailTests(unittest.TestCase):
                     return_value=("12345678", None),
                 )
             )
+            stack.enter_context(
+                mock.patch.object(
+                    monitor, "validate_cookie_with_retry", return_value=True
+                )
+            )
             stack.enter_context(mock.patch.object(monitor, "save_session_cookie"))
             stack.enter_context(
                 mock.patch.object(

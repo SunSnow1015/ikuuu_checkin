@@ -1222,6 +1222,15 @@ def validate_cookie(session, base_url):
         return False
 
 
+def validate_cookie_with_retry(session, base_url, attempts=2, delay=2):
+    for attempt in range(1, attempts + 1):
+        if validate_cookie(session, base_url):
+            return True
+        if attempt < attempts:
+            time.sleep(delay)
+    return False
+
+
 def cookie_cache_key():
     passphrase = os.getenv("IKUUU_COOKIE_KEY", "")
     if not passphrase:
@@ -1594,7 +1603,7 @@ def ikuuu_signin(email, password, mailbox_password=""):
                 cached_cookies
             )
 
-            if validate_cookie(session, base_url):
+            if validate_cookie_with_retry(session, base_url):
 
                 print(
                     "  🍪 检测到有效cookie",
@@ -1659,96 +1668,98 @@ def ikuuu_signin(email, password, mailbox_password=""):
                     '无法获取'
                 )
 
-        # 2. 帐密登录
-        body, post_base_url, build_err = \
-            build_login_body(
-                base_url,
-                email,
-                password,
-                login_opts,
-                session
-            )
-
-        if build_err:
-            return (
-                False,
-                f"登录失败：{build_err}",
-                build_err,
-                build_err,
-                build_err,
-                build_err
-            )
-
-        email_code_requested_at = time.time()
-        login_data, login_error = submit_login_request(
-            session,
-            post_base_url,
-            body,
+        # 2. 帐密登录（登录判定通过后先校验会话，未生效则换新验证码重试）
+        max_login_attempts = int(
+            (login_opts.get('captcha_solver') or {}).get('max_attempts', 3)
         )
-        if login_error:
-            return (
-                False,
-                f"登录失败：{login_error}",
-                '无法获取',
-                '无法获取',
-                '无法获取',
-                '无法获取'
-            )
+        post_base_url = base_url
+        last_login_error = '未知错误'
+        session_verified = False
 
-        if login_data.get('phase') == 'email_code' and mailbox_password:
-            email_code, email_code_error = wait_for_login_email_code(
-                email,
-                mailbox_password,
-                email_code_requested_at,
-                email_uid_checkpoint,
-            )
-            if email_code_error:
-                return (
-                    False,
-                    f"登录失败：{email_code_error}",
-                    '无法获取',
-                    '无法获取',
-                    '无法获取',
-                    '无法获取'
+        for login_attempt in range(1, max_login_attempts + 1):
+            if login_attempt > 1:
+                print(
+                    f"  [登录] 重新尝试帐密登录（第 {login_attempt}/{max_login_attempts} 次）",
+                    flush=True,
+                )
+                session.cookies.clear()
+
+            body, post_base_url, build_err = \
+                build_login_body(
+                    base_url,
+                    email,
+                    password,
+                    login_opts,
+                    session
                 )
 
-            host = urlparse(post_base_url).netloc
+            if build_err:
+                last_login_error = build_err
+                print(f"  [登录] {build_err}", flush=True)
+                continue
+
+            email_code_requested_at = time.time()
             login_data, login_error = submit_login_request(
                 session,
                 post_base_url,
-                {
-                    'host': host,
-                    'phase': 'email_code',
-                    'email_code': email_code,
-                },
+                body,
             )
             if login_error:
-                return (
-                    False,
-                    f"登录失败：{login_error}",
-                    '无法获取',
-                    '无法获取',
-                    '无法获取',
-                    '无法获取'
+                last_login_error = login_error
+                continue
+
+            if login_data.get('phase') == 'email_code' and mailbox_password:
+                email_code, email_code_error = wait_for_login_email_code(
+                    email,
+                    mailbox_password,
+                    email_code_requested_at,
+                    email_uid_checkpoint,
                 )
+                if email_code_error:
+                    last_login_error = email_code_error
+                    continue
 
-        if not login_response_authenticated(login_data):
-            print(f"  [登录] 登录未完成，当前阶段: {login_data.get('phase', 'unknown')}", flush=True)
+                host = urlparse(post_base_url).netloc
+                login_data, login_error = submit_login_request(
+                    session,
+                    post_base_url,
+                    {
+                        'host': host,
+                        'phase': 'email_code',
+                        'email_code': email_code,
+                    },
+                )
+                if login_error:
+                    last_login_error = login_error
+                    continue
 
-            phase = login_data.get('phase')
-            if phase == 'totp':
-                login_message = '需要二步验证码，请配置 IKUUU_2FA_CODE'
-            elif phase == 'email_code':
-                if mailbox_password:
-                    login_message = login_data.get('msg', '邮箱验证码校验失败')
-                else:
-                    login_message = '站点要求邮箱验证码，账号配置中未提供邮箱密码或授权码'
-            else:
-                login_message = login_data.get('msg', '未知错误')
+            if not login_response_authenticated(login_data):
+                phase = login_data.get('phase')
+                print(f"  [登录] 登录未完成，当前阶段: {phase or 'unknown'}", flush=True)
+                if phase == 'totp':
+                    last_login_error = '需要二步验证码，请配置 IKUUU_2FA_CODE'
+                    break
+                if phase == 'email_code':
+                    if mailbox_password:
+                        last_login_error = login_data.get('msg', '邮箱验证码校验失败')
+                    else:
+                        last_login_error = '站点要求邮箱验证码，账号配置中未提供邮箱密码或授权码'
+                    break
+                last_login_error = login_data.get('msg', '未知错误')
+                continue
 
+            # 登录判定通过，先确认会话真正可用，避免“已认证”假阳性
+            if validate_cookie_with_retry(session, post_base_url):
+                session_verified = True
+                break
+
+            last_login_error = '登录返回已认证但会话未生效（/user 仍跳转登录页）'
+            print(f"  [登录] {last_login_error}", flush=True)
+
+        if not session_verified:
             return (
                 False,
-                f"登录失败：{login_message}",
+                f"登录失败：{last_login_error}",
                 '无法获取',
                 '无法获取',
                 '无法获取',
